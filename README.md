@@ -1,45 +1,8 @@
-# Project Title
+# CAE-25-334 Research Repository
 
-One-liner or short description of your project.
+Hello,  
+This GitHub repository is for my research paper numbered **CAE-25-334**, and it is available for everyone to explore and reproduce the system.
 
----
+The following image showcases the system's structure and how I wired things together:
 
-## Table of Contents
-
-- [About](#about)
-- [Features](#features)
-- [Installation](#installation)
-- [Usage](#usage)
-- [Configuration](#configuration)
-- [Contributing](#contributing)
-- [License](#license)
-- [Contact](#contact)
-
----
-
-## About
-
-Describe your project here. Explain what it does, the problem it solves, or the purpose it serves.
-
----
-
-## Features
-
-- Feature 1
-- Feature 2
-- Feature 3
-
----
-
-## Installation
-
-Step-by-step instructions to get your project up and running.
-
-```bash
-# Example commands
-git clone https://github.com/yourusername/yourproject.git
-cd yourproject
-# Install dependencies
-npm install
-# or
-pip install -r requirements.txt
+![System Structure](path/to/your/image.png)
