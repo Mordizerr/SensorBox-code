@@ -1,0 +1,71 @@
+flowchart TD
+    A[Program Start] --> B[setup Function]
+    B --> C[Initialize Serial 115200]
+    C --> D[Initialize EC Sensor]
+    D --> E[Set EC Calibration]
+    E --> F[Configure LED Pin]
+    F --> G[Print Setup Messages]
+    G --> H[Enter Main Loop]
+    
+    H --> I[Check Serial Available]
+    I --> J{Data Available?}
+    J -->|No| H
+    J -->|Yes| K[Read Command String]
+    K --> L[Trim Command]
+    L --> M{Command = READ?}
+    M -->|No| H
+    M -->|Yes| N[Start Sensor Reading]
+    
+    N --> O[Read EC Analog Pin A1]
+    O --> P[Convert to Input Voltage]
+    P --> Q[Read Temperature Pin A2]
+    Q --> R[Convert to Temperature Voltage]
+    R --> S[Calculate Temperature in Celsius]
+    S --> T[Calculate Conductivity]
+    
+    T --> U[Start pH Reading Loop]
+    U --> V[Initialize pH Array Index]
+    V --> W[Read pH Sensor 40 Times]
+    W --> X[Store in pH Array]
+    X --> Y[Wait 20ms]
+    Y --> Z{All 40 Samples?}
+    Z -->|No| W
+    Z -->|Yes| AA[Calculate pH Average]
+    
+    AA --> BB[Call avergearray Function]
+    BB --> CC{Array Length > 0?}
+    CC -->|No| DD[Return Error]
+    CC -->|Yes| EE{Array Length < 5?}
+    EE -->|Yes| FF[Simple Average]
+    EE -->|No| GG[Remove Outliers]
+    
+    FF --> HH[Sum All Values]
+    HH --> II[Divide by Count]
+    II --> JJ[Return Average]
+    
+    GG --> KK[Find Min and Max]
+    KK --> LL[Process Remaining Values]
+    LL --> MM[Exclude Min and Max]
+    MM --> NN[Calculate Average]
+    NN --> JJ
+    
+    JJ --> OO[Convert to pH Voltage]
+    OO --> PP[Calculate pH Value]
+    PP --> QQ[Print All Sensor Data]
+    
+    QQ --> RR[Print Input Voltage]
+    RR --> SS[Print Conductivity]
+    SS --> TT[Print Temperature Voltage]
+    TT --> UU[Print Temperature]
+    UU --> VV[Print pH Voltage]
+    VV --> WW[Print pH Value]
+    WW --> XX[Toggle LED]
+    XX --> H
+    
+    DD --> H
+    
+    style A fill:#e1f5fe
+    style B fill:#fff3e0
+    style U fill:#f3e5f5
+    style BB fill:#e8f5e8
+    style QQ fill:#ffebee
