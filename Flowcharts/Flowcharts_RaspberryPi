@@ -1,0 +1,85 @@
+flowchart TD
+    A[Program Start] --> B[Initialize QApplication]
+    B --> C[Create SensorWindow]
+    
+    C --> D[Initialize Components]
+    D --> E[SensorReader]
+    D --> F[UARTCommunication]
+    D --> G[DataLogger]
+    D --> H[DataPlotter]
+    
+    F --> F1[Open Serial Port]
+    F1 --> F2[Start UART Read Thread]
+    F2 --> F3[Continuously Read UART Data]
+    F3 --> F4{Data Available?}
+    F4 -->|Yes| F5[Parse Response]
+    F4 -->|No| F3
+    F5 --> F6[Extract Sensor Values]
+    F6 --> F7[Store in Variables]
+    F7 --> F3
+    
+    G --> G1[Create logs Directory]
+    G1 --> G2[Create CSV File]
+    G2 --> G3[Initialize Buffer]
+    
+    H --> H1[Initialize Matplotlib]
+    H1 --> H2[Create Plots]
+    H2 --> H3[Setup Data Storage]
+    
+    C --> I[Setup UI Components]
+    I --> J[Create Labels]
+    I --> K[Create Buttons]
+    K --> K1[Average Points Buttons]
+    K --> K2[Interval Buttons]
+    I --> L[Arrange Layout]
+    
+    C --> M[Start Timers]
+    M --> N[Main Timer]
+    M --> O[UART Timer]
+    M --> P[GC Timer]
+    
+    N --> Q[Update Sensor Data]
+    Q --> R[Get UART Data]
+    R --> S[Get Values]
+    S --> T{All Data Available?}
+    T -->|No| Q
+    T -->|Yes| U[Add to Buffers]
+    U --> V{Buffer Full?}
+    V -->|No| Q
+    V -->|Yes| W[Calculate Averages]
+    W --> X[Clear Buffers]
+    X --> Y[Update Time]
+    Y --> Z[Update Labels]
+    Z --> AA[Log Data]
+    AA --> BB[Update Plots]
+    BB --> Q
+    
+    O --> CC[Send READ Command]
+    CC --> O
+    
+    P --> DD[Garbage Collection]
+    DD --> P
+    
+    K1 --> EE[Set Average Points]
+    EE --> FF[Update Variable]
+    FF --> GG[Update Styling]
+    
+    K2 --> HH[Set Interval]
+    HH --> II[Update Interval]
+    II --> JJ[Restart Timers]
+    JJ --> KK[Update Styling]
+    
+    AA --> LL[Add to Buffer]
+    LL --> MM{Buffer Full?}
+    MM -->|Yes| NN[Flush to CSV]
+    MM -->|No| OO[Continue]
+    NN --> OO
+    
+    BB --> PP[Update Data]
+    PP --> QQ[Update Lines]
+    QQ --> RR[Adjust Limits]
+    RR --> SS[Refresh Canvas]
+    
+    TT[Window Close] --> UU[Close UART]
+    UU --> VV[Flush Data]
+    VV --> WW[Exit]
