@@ -1,4 +1,3 @@
-file:///home/raspberry/Downloads/Sensor_Reader_v6.py {"mtime":1741392085212,"ctime":1731081160780,"size":22007,"etag":"3drgmjqsamrs","orphaned":false,"typeId":""}
 #!/usr/bin/python3
 
 import sys
@@ -14,10 +13,10 @@ from PyQt5.QtGui import QFont
 from PyQt5.QtCore import QTimer
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
-from DFRobot_ADS1115 import ADS1115
-from DFRobot_PH import DFRobot_PH
 import threading
 from datetime import datetime
+from collections import deque
+import gc
 
 class UARTCommunication:
     def __init__(self, port='/dev/ttyAMA0', baudrate=115200):
@@ -35,6 +34,9 @@ class UARTCommunication:
             self.ser = serial.Serial(self.port, self.baudrate, timeout=1)
             if not self.ser.is_open:
                 self.ser.open()
+            # Clear any existing data in the buffer
+            self.ser.reset_input_buffer()
+            self.ser.reset_output_buffer()
             time.sleep(1)  # Wait for serial connection to initialize
         except (serial.SerialException, TypeError) as e:
             print(f"Error opening serial port: {e}")
@@ -49,7 +51,11 @@ class UARTCommunication:
     def send_command(self, command):
         # Send a command over UART, ensuring the serial connection is open
         if self.ser and self.ser.is_open:
-            self.ser.write(command.encode('utf-8'))
+            try:
+                self.ser.write(command.encode('utf-8'))
+                self.ser.flush()  # Ensure data is sent immediately
+            except Exception as e:
+                print(f"Error sending command: {e}")
         else:
             print("Serial connection not open. Cannot send command.")
 
@@ -81,7 +87,7 @@ class UARTCommunication:
                     # Extract temperature value from the response string
                     temp_str = response.split("Temperature: ")[1].split(" ")[0]
                     # Clean the temperature string by replacing invalid characters
-                    temp_str = temp_str.replace('�', '').replace('�', '')  # Adjust this as necessary for specific characters
+                    temp_str = temp_str.replace('Ã¯Â¿Â½', '').replace('Ã¯Â¿Â½', '')  # Adjust this as necessary for specific characters
                     temperature_value = float(temp_str)
                     self.temperature = temperature_value  # Store temperature value
 
@@ -94,16 +100,18 @@ class UARTCommunication:
                 print(f"Error processing response: {response}, Error: {e}")
 
     def read_uart(self):
-        # Continuously read from UART and process responses without sending "READ" automatically
+        # Continuously read from UART and process responses
         while self.running:
-            # Check if data is available and read it
-            if self.ser and self.ser.is_open and self.ser.in_waiting > 0:
+            if self.ser and self.ser.is_open:
                 try:
-                    response = self.ser.readline().decode('utf-8').strip()  # Read response
-                    self.process_response(response)  # Process the response
+                    # Use a shorter timeout and check for available data
+                    if self.ser.in_waiting > 0:
+                        response = self.ser.readline().decode('utf-8', errors='ignore').strip()
+                        if response:  # Only process non-empty responses
+                            self.process_response(response)
                 except Exception as e:
                     print(f"Error reading from UART: {e}")
-            time.sleep(1)  # Sleep to prevent tight loop and CPU overload
+            time.sleep(0.1)  # Reduced sleep time for more responsive reading
 
     def close(self):
         # Close the serial connection and stop the read thread when done
@@ -133,6 +141,10 @@ class DataLogger:
                 writer = csv.DictWriter(file, fieldnames=self.fieldnames)
                 writer.writeheader()
 
+        # Buffer for batch writing to reduce I/O operations
+        self.write_buffer = []
+        self.buffer_size = 10  # Write every 10 entries
+
     def log_data(self, elapsed_time, temp2, ec, ph_value):
         """Log a new row of data to the CSV file."""
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -141,36 +153,45 @@ class DataLogger:
             "Elapsed Time": elapsed_time,
             "Temperature": temp2,
             "EC (us/cm)": ec,
-            "pH Value": ph_value  # Log pH value
+            "pH Value": ph_value
         }
 
-        # Append the data to the CSV file
-        with open(self.filename, mode='a', newline='') as file:
-            writer = csv.DictWriter(file, fieldnames=self.fieldnames)
-            writer.writerow(data_row)
+        # Add to buffer
+        self.write_buffer.append(data_row)
+
+        # Write to file when buffer is full
+        if len(self.write_buffer) >= self.buffer_size:
+            self.flush_buffer()
+
+    def flush_buffer(self):
+        """Flush the buffer to the CSV file."""
+        if self.write_buffer:
+            with open(self.filename, mode='a', newline='') as file:
+                writer = csv.DictWriter(file, fieldnames=self.fieldnames)
+                writer.writerows(self.write_buffer)
+            self.write_buffer.clear()
+
+    def close(self):
+        """Flush any remaining data and close."""
+        self.flush_buffer()
 
 
 class DataPlotter(QWidget):
     def __init__(self, max_points=50):
         super().__init__()
 
-        # Create a figure and a canvas to plot on
-        self.figure = plt.figure(figsize=(8, 10))
-
         # Create the main vertical layout for the DataPlotter
         self.main_layout = QVBoxLayout(self)
-        self.main_layout.setSpacing(0)  # Set spacing to zero
-        self.main_layout.setContentsMargins(0, 0, 0, 0)  # Set margins to zero
+        self.main_layout.setSpacing(0)
+        self.main_layout.setContentsMargins(0, 0, 0, 0)
         self.setLayout(self.main_layout)
 
-        # Initialize data lists
-        self.time_data = []
-        self.temp_uart_data = []  # New data for UART temperature
-        self.ec2_data = []  # Data for second conductivity
-        self.ph_data = []
-
-        # Set the maximum number of points to display
+        # Use deque for efficient data management
         self.max_points = max_points
+        self.time_data = deque(maxlen=max_points)
+        self.temp_uart_data = deque(maxlen=max_points)
+        self.ec2_data = deque(maxlen=max_points)
+        self.ph_data = deque(maxlen=max_points)
 
         # Create separate widgets for each graph
         self.temp2_widget = QWidget(self)
@@ -178,27 +199,27 @@ class DataPlotter(QWidget):
         self.ph_widget = QWidget(self)
 
         # Create canvases for each graph
-        self.canvas_temp2 = FigureCanvas(plt.figure())
-        self.canvas_ec2 = FigureCanvas(plt.figure())
-        self.canvas_ph = FigureCanvas(plt.figure())
+        self.canvas_temp2 = FigureCanvas(plt.figure(figsize=(4, 2)))
+        self.canvas_ec2 = FigureCanvas(plt.figure(figsize=(4, 2)))
+        self.canvas_ph = FigureCanvas(plt.figure(figsize=(4, 2)))
 
         # Set up the layout for each widget
         temp2_layout = QVBoxLayout()
         temp2_layout.addWidget(self.canvas_temp2)
-        temp2_layout.setSpacing(0)  # Set spacing to zero for temperature 2
-        temp2_layout.setContentsMargins(0, 0, 0, 0)  # Set margins to zero
+        temp2_layout.setSpacing(0)
+        temp2_layout.setContentsMargins(0, 0, 0, 0)
         self.temp2_widget.setLayout(temp2_layout)
 
         ec2_layout = QVBoxLayout()
         ec2_layout.addWidget(self.canvas_ec2)
-        ec2_layout.setSpacing(0)  # Set spacing to zero for EC 2
-        ec2_layout.setContentsMargins(0, 0, 0, 0)  # Set margins to zero
+        ec2_layout.setSpacing(0)
+        ec2_layout.setContentsMargins(0, 0, 0, 0)
         self.ec2_widget.setLayout(ec2_layout)
 
         ph_layout = QVBoxLayout()
         ph_layout.addWidget(self.canvas_ph)
-        ph_layout.setSpacing(0)  # Set spacing to zero for pH
-        ph_layout.setContentsMargins(0, 0, 0, 0)  # Set margins to zero
+        ph_layout.setSpacing(0)
+        ph_layout.setContentsMargins(0, 0, 0, 0)
         self.ph_widget.setLayout(ph_layout)
 
         # Add widgets to the main layout
@@ -206,119 +227,99 @@ class DataPlotter(QWidget):
         self.main_layout.addWidget(self.ec2_widget)
         self.main_layout.addWidget(self.ph_widget)
 
+        # Create axes
         self.ax_temp2 = self.canvas_temp2.figure.add_subplot(111)
+        self.ax_ec2 = self.canvas_ec2.figure.add_subplot(111)
+        self.ax_ph = self.canvas_ph.figure.add_subplot(111)
+
+        # Initialize plots
+        self.line_temp2, = self.ax_temp2.plot([], [], color='purple', label='Temperature')
+        self.line_ec2, = self.ax_ec2.plot([], [], color='blue', label='EC')
+        self.line_ph, = self.ax_ph.plot([], [], color='orange', label='pH')
+
+        # Set titles and labels
         self.ax_temp2.set_title('Temperature (C)')
         self.ax_temp2.set_xlabel('Time (s)')
         self.ax_temp2.set_ylabel('Temperature (C)')
 
-        self.ax_ec2 = self.canvas_ec2.figure.add_subplot(111)
         self.ax_ec2.set_title('EC (us/cm)')
         self.ax_ec2.set_xlabel('Time (s)')
         self.ax_ec2.set_ylabel('EC (us/cm)')
 
-        self.ax_ph = self.canvas_ph.figure.add_subplot(111)
         self.ax_ph.set_title('pH Level')
         self.ax_ph.set_xlabel('Time (s)')
         self.ax_ph.set_ylabel('pH')
 
-        # Adjust layout to prevent overlap
-        self.figure.tight_layout()
+        # Configure figure settings for better performance
+        for canvas in [self.canvas_temp2, self.canvas_ec2, self.canvas_ph]:
+            canvas.figure.tight_layout()
 
     def update_plot(self, elapsed_time, temp_uart, ec2, ph):
-        # Append new data
+        # Append new data to deques (automatically handles max_points)
         self.time_data.append(elapsed_time)
         self.temp_uart_data.append(temp_uart)
         self.ec2_data.append(ec2)
         self.ph_data.append(ph)
-    
-        # Limit the number of points to the maximum defined
-        if len(self.time_data) > self.max_points:
-            self.time_data = self.time_data[-self.max_points:]
-            self.temp_uart_data = self.temp_uart_data[-self.max_points:]
-            self.ec2_data = self.ec2_data[-self.max_points:]
-            self.ph_data = self.ph_data[-self.max_points:]
-    
-        # Clear previous plots
-        self.ax_temp2.clear()
-        self.ax_ec2.clear()
-        self.ax_ph.clear()
-    
-        # Plot the data
-        self.ax_temp2.plot(self.time_data, self.temp_uart_data, label='Temperature', color='purple')
-        self.ax_ec2.plot(self.time_data, self.ec2_data, label='EC', color='blue')
-        self.ax_ph.plot(self.time_data, self.ph_data, label='pH', color='orange')
-    
-        self.ax_temp2.set_title('Temperature (C)')
-        self.ax_temp2.set_xlabel('Time (s)')
-        self.ax_temp2.set_ylabel('Temperature (C)')
-    
-        self.ax_ec2.set_title('EC (us/cm)')
-        self.ax_ec2.set_xlabel('Time (s)')
-        self.ax_ec2.set_ylabel('EC (us/cm)')
-    
-        self.ax_ph.set_title('pH Level')
-        self.ax_ph.set_xlabel('Time (s)')
-        self.ax_ph.set_ylabel('pH')
-    
-        # Set y-axis limits with fixed values for temperatures and pH, and dynamic padding for EC2
-        fixed_padding = 4  # Fixed padding for the max of Temperature and pH
-    
-        if self.temp_uart_data:
-            y_max_temp2 = max(self.temp_uart_data) + fixed_padding
-            self.ax_temp2.set_ylim(bottom=18, top=y_max_temp2)  # Fixed minimum of 15 for Temperature 2
-    
-        if self.ec2_data:
-            y_min_ec2 = min(self.ec2_data)
-            y_max_ec2 = max(self.ec2_data) + fixed_padding
-            self.ax_ec2.set_ylim(bottom=y_min_ec2, top=y_max_ec2)  # Dynamic minimum for EC2
-    
-        if self.ph_data:
-            y_max_ph = max(self.ph_data) + fixed_padding
-            self.ax_ph.set_ylim(bottom=0, top=y_max_ph)  # Fixed minimum of 0 for pH
-    
+
+        # Convert deques to lists for plotting
+        time_list = list(self.time_data)
+        temp_list = list(self.temp_uart_data)
+        ec2_list = list(self.ec2_data)
+        ph_list = list(self.ph_data)
+
+        # Update line data instead of clearing and redrawing
+        self.line_temp2.set_data(time_list, temp_list)
+        self.line_ec2.set_data(time_list, ec2_list)
+        self.line_ph.set_data(time_list, ph_list)
+
+        # Update axis limits
+        if time_list:
+            for ax in [self.ax_temp2, self.ax_ec2, self.ax_ph]:
+                ax.set_xlim(min(time_list), max(time_list))
+
+        # Set y-axis limits with better logic
+        fixed_padding = 4
+
+        if temp_list:
+            y_min_temp = min(temp_list) - 2
+            y_max_temp = max(temp_list) + fixed_padding
+            self.ax_temp2.set_ylim(y_min_temp, y_max_temp)
+
+        if ec2_list:
+            y_min_ec2 = min(ec2_list) - fixed_padding
+            y_max_ec2 = max(ec2_list) + fixed_padding
+            self.ax_ec2.set_ylim(y_min_ec2, y_max_ec2)
+
+        if ph_list:
+            y_min_ph = max(0, min(ph_list) - 1)
+            y_max_ph = max(ph_list) + fixed_padding
+            self.ax_ph.set_ylim(y_min_ph, y_max_ph)
+
         # Refresh the canvases
-        self.canvas_temp2.draw()
-        self.canvas_ec2.draw()
-        self.canvas_ph.draw()
+        self.canvas_temp2.draw_idle()  # Use draw_idle() instead of draw()
+        self.canvas_ec2.draw_idle()
+        self.canvas_ph.draw_idle()
 
 
 class SensorReader:
     def __init__(self):
-
         # Temperature sensor initialization
         os.system('modprobe w1-gpio')
         os.system('modprobe w1-therm')
-        #self.device_folder = glob.glob('/sys/bus/w1/devices/' + '28*')[0]
-        #self.device_file = self.device_folder + '/w1_slave'
-
-#    def read_temp_raw(self):
-#        with open(self.device_file, 'r') as f:
-#            lines = f.readlines()
-#        return lines
-#
-#    def read_temp(self):
-#        lines = self.read_temp_raw()
-#        while 'YES' not in lines[0]:
-#            time.sleep(0.2)
-#            lines = self.read_temp_raw()
-#        equals_pos = lines[1].find('t=')
-#        if equals_pos != -1:
-#            temp_string = lines[1][equals_pos+2:]
-#            temp_c = float(temp_string) / 1000.0
-#            return temp_c
-#        return None
 
     def read_temp(self):
         return 25
+
 
 class SensorWindow(QMainWindow):
     def __init__(self):
         super().__init__()
 
         self.average_points = 1
-        self.conductivity_buffer = []
-        self.temperature_uart_buffer = []
-        self.ph_value_buffer = []
+        # Use deques for efficient buffer management
+        self.conductivity_buffer = deque(maxlen=10)
+        self.temperature_uart_buffer = deque(maxlen=10)
+        self.ph_value_buffer = deque(maxlen=10)
 
         self.setWindowTitle("Sensor Data Monitoring")
 
@@ -337,18 +338,18 @@ class SensorWindow(QMainWindow):
 
         # Create a QGroupBox to hold the text labels (vertically)
         self.label_group_box = QGroupBox("Sensor Data", self)
-        self.label_layout = QVBoxLayout()  # Vertically place the labels
+        self.label_layout = QVBoxLayout()
 
         # Create labels for displaying data
         self.labels = {
             "Elapsed Time": QLabel("Elapsed Time: 0 sec"),
-            "Temperature": QLabel("Temperature: "),  # New label for UART temperature
-            "EC": QLabel("EC: "),  # Second conductivity label
-            "pH Value": QLabel("pH Value: ")  # New label for pH value
+            "Temperature": QLabel("Temperature: "),
+            "EC": QLabel("EC: "),
+            "pH Value": QLabel("pH Value: ")
         }
 
         # Adjust font size and style for the labels
-        font = QFont("Arial", 20)  # Set the font to Arial and size 20
+        font = QFont("Arial", 20)
         for label in self.labels.values():
             label.setFont(font)
 
@@ -406,23 +407,31 @@ class SensorWindow(QMainWindow):
         self.data_logger = DataLogger()
 
         # Create a variable for the measurement interval (in seconds)
-        self.measurement_interval = 3  # Default value
-        self.elapsed_time = 0  # Initialize elapsed time
+        self.measurement_interval = 1
+        self.elapsed_time = 0
 
         # Create a timer to update sensor data
         self.timer = QTimer()
         self.timer.timeout.connect(self.update_sensor_data)
-        print(f"Measurement Interval: {self.measurement_interval} seconds")
-        self.timer.start(int(self.measurement_interval * 1000))  # Convert to milliseconds
+        self.timer.start(int(self.measurement_interval * 1000))
 
         # Create a separate timer for UART communication (READ command)
         self.uart_timer = QTimer()
         self.uart_timer.timeout.connect(self.send_read_command)
-        self.uart_timer.start(self.measurement_interval * 1000)  # 1-second interval for UART communication
+        self.uart_timer.start(self.measurement_interval * 1000)
 
         # Track the last pressed buttons
         self.last_pressed_average_button = None
         self.last_pressed_interval_button = None
+
+        # Add garbage collection timer
+        self.gc_timer = QTimer()
+        self.gc_timer.timeout.connect(self.force_garbage_collection)
+        self.gc_timer.start(30000)  # Run every 30 seconds
+
+    def force_garbage_collection(self):
+        """Force garbage collection to prevent memory leaks."""
+        gc.collect()
 
     def reset_average_buttons(self):
         self.average_1_button.setStyleSheet("")
@@ -440,7 +449,6 @@ class SensorWindow(QMainWindow):
         self.reset_average_buttons()
         button.setStyleSheet("background-color: yellow; border: 1px solid black;")
         self.last_pressed_average_button = button
-        print(f"Average points set to: {self.average_points}")
 
     def set_measurement_interval(self, interval, button):
         print(f"Setting measurement interval to {interval} seconds")
@@ -450,17 +458,15 @@ class SensorWindow(QMainWindow):
         self.last_pressed_interval_button = button
         self.timer.start(int(self.measurement_interval * 1000))
         self.uart_timer.start(self.measurement_interval * 1000)
-        print(f"Measurement interval set to: {self.measurement_interval} seconds")
 
     def update_sensor_data(self):
-        print(f"update_sensor_data() called at: {time.time()}")  # Debug print
-        self.read_and_update()  # Call directly, not in a new thread
+        self.read_and_update()
 
     def read_and_update(self):
-        # Get the conductivity (EC 2) from UART communication
+        # Get the data from UART communication
         conductivity = self.uart_communication.get_conductivity()
         temperature_uart = self.uart_communication.get_temperature()
-        ph_value = self.uart_communication.get_ph_value()  # Get the pH value from UART
+        ph_value = self.uart_communication.get_ph_value()
 
         # Ensure all data was read correctly before updating
         if conductivity is not None and temperature_uart is not None and ph_value is not None:
@@ -481,31 +487,31 @@ class SensorWindow(QMainWindow):
                 self.ph_value_buffer.clear()
 
                 # Increment elapsed time
-                self.elapsed_time += self.measurement_interval * self.average_points  # Increment by the total interval
+                self.elapsed_time += self.measurement_interval * self.average_points
 
                 # Update labels with new values
                 self.labels["Temperature"].setText(f"Temperature: {avg_temperature_uart:.2f} C")
-                self.labels["EC"].setText(f"EC: {avg_conductivity:.2f} us/cm")  # EC from UART
-                self.labels["pH Value"].setText(f"pH Value: {avg_ph_value:.2f}")  # Update pH value label
+                self.labels["EC"].setText(f"EC: {avg_conductivity:.2f} us/cm")
+                self.labels["pH Value"].setText(f"pH Value: {avg_ph_value:.2f}")
 
                 # Update the elapsed time label
                 self.labels["Elapsed Time"].setText(f"Elapsed Time: {self.elapsed_time:.2f}s")
 
-                # Log the data, including pH value
+                # Log the data
                 self.data_logger.log_data(self.elapsed_time, avg_temperature_uart, avg_conductivity, avg_ph_value)
 
-                # Update the plot with all parameters, including UART temperature and pH value
-                self.data_plotter.update_plot(self.elapsed_time, avg_temperature_uart, avg_conductivity, avg_ph_value)  # Pass pH value
+                # Update the plot
+                self.data_plotter.update_plot(self.elapsed_time, avg_temperature_uart, avg_conductivity, avg_ph_value)
 
     def send_read_command(self):
         # Send the READ command periodically
         command = "READ\n"
-        print(f"[{time.strftime('%H:%M:%S')}] Sending UART command: {command.strip()}")
         self.uart_communication.send_command(command)
 
     def closeEvent(self, event):
-        self.uart_communication.close()  # Close UART communication on exit
-        event.accept()  # Accept the close event
+        self.uart_communication.close()
+        self.data_logger.close()  # Flush any remaining data
+        event.accept()
 
 
 if __name__ == "__main__":
